@@ -2,195 +2,225 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
-import os
 from openai import AzureOpenAI
 
 # ==========================================
 # 1. CONFIGURAÇÃO DA PÁGINA
 # ==========================================
 st.set_page_config(
-    page_title="Dashboard Gerencial & Chat",
+    page_title="Painel Analítico e Suporte TI",
     page_icon="📊",
     layout="wide"
 )
 
 # ==========================================
-# 2. CSS PARA O CHAT FLUTUANTE
+# 2. CSS CUSTOMIZADO (CHAT FLUTUANTE ESTILO WHATSAPP)
 # ==========================================
-# Este CSS garante que APENAS o container do chat fique no canto inferior direito,
-# sem quebrar ou esconder o resto do site.
-css_chat_flutuante = """
+css_layout = """
 <style>
-/* Foca especificamente no bloco que contém a classe .marcador-chat */
-div[data-testid="stVerticalBlock"]:has(> div.element-container .marcador-chat) {
+/* Esconde o menu padrão e footer do Streamlit para ficar mais limpo */
+#MainMenu {visibility: hidden;}
+footer {visibility: hidden;}
+
+/* Captura o bloco que contém a classe .chat-anchor e o transforma em uma janela flutuante no canto */
+div[data-testid="stVerticalBlock"]:has(.chat-anchor) {
     position: fixed;
     bottom: 20px;
     right: 20px;
-    width: 360px;
-    background-color: #ffffff;
-    border-radius: 12px;
-    box-shadow: 0px 8px 24px rgba(0,0,0,0.2);
-    border: 1px solid #e0e0e0;
-    padding: 15px;
+    width: 380px;
+    background-color: #1A1C23; /* Fundo escuro do chat */
+    border-radius: 15px;
+    padding: 15px 15px 5px 15px;
+    box-shadow: 0px 10px 30px rgba(0,0,0,0.5);
     z-index: 99999;
+    border: 1px solid #333;
+}
+
+/* Estilização interna das mensagens simulando WhatsApp */
+.msg-user {
+    background-color: #005C4B;
+    color: white;
+    padding: 10px;
+    border-radius: 10px 0px 10px 10px;
+    margin: 5px 0 5px 40px;
+    text-align: right;
+    font-size: 14px;
+}
+.msg-bot {
+    background-color: #2A2D37;
+    color: white;
+    padding: 10px;
+    border-radius: 0px 10px 10px 10px;
+    margin: 5px 40px 5px 0;
+    text-align: left;
+    font-size: 14px;
+    border: 1px solid #3d404d;
 }
 </style>
 """
-st.markdown(css_chat_flutuante, unsafe_allow_html=True)
+st.markdown(css_layout, unsafe_allow_html=True)
 
-# Inicializa o histórico de mensagens do chat na sessão
+# Inicialização de variáveis de sessão
 if "messages" not in st.session_state:
-    st.session_state.messages = [{"role": "assistant", "content": "Olá! Sou o assistente de vendas da loja. Em que posso ajudar?"}]
+    st.session_state.messages = [
+        {"role": "assistant", "content": "Olá! Como posso ajudar você hoje com o suporte de TI?"}
+    ]
+if "conteudo_base" not in st.session_state:
+    st.session_state.conteudo_base = ""
 
 # ==========================================
-# 3. BARRA LATERAL (CONFIGURAÇÕES IA)
+# 3. BARRA LATERAL (MENU ESQUERDO)
 # ==========================================
 with st.sidebar:
-    st.title("⚙️ Configurações IA")
-    st.caption("Insira as credenciais do Azure OpenAI para ativar o chatbot.")
-    
-    end_ativo = st.text_input("Endpoint Azure:", value=st.session_state.get("endpoint", ""), type="default")
-    key_ativa = st.text_input("API Key:", value=st.session_state.get("api_key", ""), type="password")
-    mod_ativo = st.text_input("Modelo:", value=st.session_state.get("modelo", "gpt-4o-mini"))
-    
-    if st.button("Salvar Chaves", use_container_width=True):
+    # Credenciais em Expander para não poluir
+    with st.expander("⚙️ Credenciais Azure", expanded=False):
+        end_ativo = st.text_input("Endpoint:", value=st.session_state.get("endpoint", ""), type="default")
+        key_ativa = st.text_input("API Key:", value=st.session_state.get("api_key", ""), type="password")
         st.session_state.endpoint = end_ativo
         st.session_state.api_key = key_ativa
-        st.session_state.modelo = mod_ativo
-        st.success("Configuração salva!")
+
+    mod_ativo = st.text_input("Deployment / Modelo:", value="gpt-4o-mini")
+    st.session_state.modelo = mod_ativo
+    
+    st.divider()
+    
+    persona_padrao = "Forma ágil, clara e cordial. Consulte sempre a base anexada para orçamentos, procedimentos e SLAs."
+    persona = st.text_area("Persona da IA:", value=persona_padrao, height=100)
+    
+    st.divider()
+    
+    arquivo_upload = st.file_uploader("Upload da Base (CSV para Dashboard + Chat):", type=["csv"])
+    
+    if st.button("🚀 Conectar IA", use_container_width=True, type="primary"):
+        st.success("IA Conectada!")
+        
+    if st.button("🔄 Novo Chat", use_container_width=True):
+        st.session_state.messages = [{"role": "assistant", "content": "Olá! Como posso ajudar você hoje com o suporte de TI?"}]
+        st.rerun()
 
 # ==========================================
-# 4. CARREGAMENTO DE DADOS (À PROVA DE FALHAS)
+# 4. PROCESSAMENTO DE DADOS DO DASHBOARD
 # ==========================================
 @st.cache_data
-def carregar_dados():
-    arquivo = "dados_assistencia_tech.csv"
-    # Se o CSV estiver na pasta, ele lê. Se não estiver, simula na hora para o Dashboard não quebrar.
-    if os.path.exists(arquivo):
+def processar_dados(arquivo):
+    if arquivo is not None:
         df = pd.read_csv(arquivo)
-        df['Data'] = pd.to_datetime(df['Data'])
+        st.session_state.conteudo_base = df.to_string(index=False) # Salva para o RAG
     else:
+        # Dados simulados se nenhum arquivo for enviado (evita tela branca)
         np.random.seed(42)
-        datas = pd.date_range(start='2025-01-01', periods=1200, freq='D')
         df = pd.DataFrame({
-            'Data': datas,
-            'Categoria': np.random.choice(['Hardware', 'Software', 'Serviço', 'Reparo Misto'], 1200),
-            'Item_Servico': ['Serviço / Peça Padrão'] * 1200,
-            'Custo_Peca_R$': np.random.uniform(50, 600, 1200),
-            'Valor_Servico_R$': np.random.uniform(100, 500, 1200),
-            'Qtd_Vendas': np.random.randint(1, 6, 1200),
-            'Orcamentos_Feitos': np.random.randint(2, 10, 1200),
-            'Servicos_Atrasados': np.random.choice([0, 1, 2], 1200, p=[0.85, 0.10, 0.05])
+            'Categoria': np.random.choice(['Hardware', 'Software', 'Redes', 'Manutenção'], 150),
+            'Custo_Total': np.random.uniform(50, 600, 150),
+            'SLA_Horas': np.random.uniform(1, 24, 150)
         })
-        
-    df['Mes_Ano'] = df['Data'].dt.strftime('%Y-%m')
-    df['Receita_Total'] = (df['Custo_Peca_R$'] + df['Valor_Servico_R$']) * df['Qtd_Vendas']
     return df
 
-df = carregar_dados()
+df_dash = processar_dados(arquivo_upload)
 
 # ==========================================
-# 5. TELA PRINCIPAL: RESUMO GERENCIAL IMEDIATO
+# 5. TELA PRINCIPAL (DASHBOARD)
 # ==========================================
-st.title("📊 Resumo Gerencial - Assistência Técnica")
-st.write("Acompanhamento financeiro e operacional em tempo real.")
+st.title("📊 Painel Analítico de Manutenção e Serviços de TI")
 
-# KPIs - Valores e Quantidades em Destaque
-kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+# Cálculo dos KPIs
+total_servicos = len(df_dash)
+ticket_medio = df_dash['Custo_Total'].mean() if 'Custo_Total' in df_dash.columns else 0
+sla_medio = df_dash['SLA_Horas'].mean() if 'SLA_Horas' in df_dash.columns else 0
 
-receita_bruta = df['Receita_Total'].sum()
-total_vendas = df['Qtd_Vendas'].sum()
-total_orcamentos = df['Orcamentos_Feitos'].sum()
-total_atrasos = df['Servicos_Atrasados'].sum()
-
-kpi1.metric("Faturamento Bruto Projetado", f"R$ {receita_bruta:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
-kpi2.metric("Quantidade de Vendas", f"{total_vendas:,}")
-kpi3.metric("Orçamentos Emitidos", f"{total_orcamentos:,}")
-kpi4.metric("Serviços em Atraso", f"{total_atrasos:,}", delta_color="inverse" if total_atrasos > 0 else "normal")
+col1, col2, col3 = st.columns(3)
+col1.metric("Total de Serviços", f"{total_servicos} itens")
+col2.metric("Ticket Médio", f"R$ {ticket_medio:,.2f}")
+col3.metric("SLA Médio", f"{sla_medio:.1f} h")
 
 st.divider()
 
-# Gráficos de Gestão
+# Gráficos iguais aos da imagem
 col_grafico1, col_grafico2 = st.columns(2)
 
 with col_grafico1:
-    st.subheader("Distribuição de Receita")
-    df_cat = df.groupby('Categoria')['Receita_Total'].sum().reset_index()
-    fig_rosca = px.pie(df_cat, values='Receita_Total', names='Categoria', hole=0.4, color_discrete_sequence=px.colors.qualitative.Set2)
-    fig_rosca.update_layout(margin=dict(t=0, b=0, l=0, r=0))
-    st.plotly_chart(fig_rosca, use_container_width=True)
+    st.markdown("**Custo Total por Categoria (R$)**")
+    if 'Categoria' in df_dash.columns and 'Custo_Total' in df_dash.columns:
+        df_agrupado = df_dash.groupby('Categoria')['Custo_Total'].sum().reset_index()
+        fig_bar = px.bar(df_agrupado, x='Categoria', y='Custo_Total', color='Categoria')
+        fig_bar.update_layout(showlegend=False, margin=dict(t=10, b=0, l=0, r=0))
+        st.plotly_chart(fig_bar, use_container_width=True)
 
 with col_grafico2:
-    st.subheader("Evolução Mensal de Faturamento")
-    df_mes = df.groupby('Mes_Ano')['Receita_Total'].sum().reset_index().sort_values('Mes_Ano')
-    fig_linha = px.line(df_mes, x='Mes_Ano', y='Receita_Total', markers=True)
-    fig_linha.update_traces(line_color='#0068c9', line_width=3)
-    fig_linha.update_layout(margin=dict(t=0, b=0, l=0, r=0))
-    st.plotly_chart(fig_linha, use_container_width=True)
+    st.markdown("**Distribuição de Valores**")
+    if 'Categoria' in df_dash.columns and 'Custo_Total' in df_dash.columns:
+        fig_pie = px.pie(df_agrupado, values='Custo_Total', names='Categoria', hole=0.4)
+        fig_pie.update_layout(margin=dict(t=10, b=0, l=0, r=0))
+        st.plotly_chart(fig_pie, use_container_width=True)
 
 # ==========================================
-# 6. WIDGET CHATBOT (CANTO DIREITO INFERIOR)
+# 6. CHAT FLUTUANTE (CANTO DIREITO)
 # ==========================================
-# Este container é capturado pelo CSS criado no início do código
-container_chat = st.container()
+# Este container inteiro será movido para o canto da tela pelo CSS lá do topo
+chat_container = st.container()
 
-with container_chat:
-    # A classe vazia abaixo serve apenas como "âncora" para o CSS puxar este container para o canto
-    st.markdown('<div class="marcador-chat"></div>', unsafe_allow_html=True)
+with chat_container:
+    # A âncora invisível que o CSS usa para puxar o container
+    st.markdown('<div class="chat-anchor"></div>', unsafe_allow_html=True)
     
-    st.markdown("#### 💬 Chat de Atendimento")
-    
-    # Área de rolagem para as mensagens (evita que o balão cresça infinitamente)
-    area_mensagens = st.container(height=300)
-    with area_mensagens:
+    # Cabeçalho do Chat
+    st.markdown("""
+    <div style="display: flex; align-items: center; color: white; margin-bottom: 10px;">
+        <h3 style="margin: 0; font-size: 18px;">🎧 Suporte de TI Online</h3>
+    </div>
+    <div style="color: #00E676; font-size: 12px; margin-top: -10px; margin-bottom: 15px;">🟢 online agora</div>
+    """, unsafe_allow_html=True)
+
+    # Área das mensagens de texto (Scrollable)
+    area_scroll = st.container(height=300)
+    with area_scroll:
         for msg in st.session_state.messages:
             if msg["role"] == "user":
-                st.info(msg["content"], icon="👤")
+                st.markdown(f'<div class="msg-user">{msg["content"]}</div>', unsafe_allow_html=True)
             else:
-                st.success(msg["content"], icon="🤖")
+                st.markdown(f'<div class="msg-bot">{msg["content"]}</div>', unsafe_allow_html=True)
 
-    # Formulário de envio de mensagem (compacto)
-    with st.form("form_chat", clear_on_submit=True):
-        col_input, col_btn = st.columns([4, 1])
-        with col_input:
-            mensagem_usuario = st.text_input("Msg", label_visibility="collapsed", placeholder="Digite sua dúvida...")
-        with col_btn:
-            btn_enviar = st.form_submit_button("➤")
+    # Formulário de envio acoplado embaixo
+    with st.form("form_envio", clear_on_submit=True):
+        mensagem = st.text_input("Digite sua dúvida...", label_visibility="collapsed")
+        enviado = st.form_submit_button("Enviar 🚀", use_container_width=True)
+        
+        if enviado and mensagem:
+            # Salva usuário
+            st.session_state.messages.append({"role": "user", "content": mensagem})
             
-        if btn_enviar and mensagem_usuario:
-            # Adiciona a pergunta à tela
-            st.session_state.messages.append({"role": "user", "content": mensagem_usuario})
-            
-            # Validação simples da API
-            if not st.session_state.get("api_key") or not st.session_state.get("endpoint"):
-                st.session_state.messages.append({
-                    "role": "assistant", 
-                    "content": "⚠️ Chaves da API ausentes. Peça ao administrador para configurá-las na barra lateral esquerda."
-                })
+            # Checa chaves
+            if not st.session_state.api_key or not st.session_state.endpoint:
+                st.session_state.messages.append({"role": "assistant", "content": "⚠️ Por favor, insira as credenciais da Azure OpenAI na barra lateral."})
                 st.rerun()
             else:
+                # Chama API Azure
                 try:
-                    # Chamada Azure OpenAI
                     client = AzureOpenAI(
                         azure_endpoint=st.session_state.endpoint.strip(),
                         api_key=st.session_state.api_key.strip(),
                         api_version="2024-06-01"
                     )
                     
-                    historico_api = [{"role": "system", "content": "Você é um simpático assistente virtual de vendas e suporte."}]
-                    for m in st.session_state.messages:
-                        historico_api.append({"role": m["role"], "content": m["content"]})
+                    # Contexto RAG + Persona
+                    sys_prompt = persona
+                    if st.session_state.conteudo_base:
+                        sys_prompt += f"\n\n--- DADOS DA PLANILHA ---\n{st.session_state.conteudo_base}"
                         
-                    response = client.chat.completions.create(
+                    mensagens_api = [{"role": "system", "content": sys_prompt}]
+                    for m in st.session_state.messages:
+                        mensagens_api.append({"role": m["role"], "content": m["content"]})
+                        
+                    resposta = client.chat.completions.create(
                         model=st.session_state.modelo.strip(),
-                        messages=historico_api,
-                        temperature=0.7
+                        messages=mensagens_api,
+                        temperature=0.3
                     )
                     
-                    resposta = response.choices[0].message.content
-                    st.session_state.messages.append({"role": "assistant", "content": resposta})
+                    texto_ia = resposta.choices[0].message.content
+                    st.session_state.messages.append({"role": "assistant", "content": texto_ia})
                     st.rerun()
                     
                 except Exception as e:
-                    st.session_state.messages.append({"role": "assistant", "content": f"❌ Erro na IA: {e}"})
+                    st.session_state.messages.append({"role": "assistant", "content": f"Erro de conexão: {str(e)}"})
                     st.rerun()
